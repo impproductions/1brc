@@ -1,45 +1,85 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
+	"math"
 	"os"
+	"sort"
 	"strconv"
+	"sync"
 	"sync/atomic"
+	"time"
 )
 
-var stats map[string]float32 = make(map[string]float32, 0)
+type Stat struct {
+	Min   float64
+	Tot   float64
+	Count int64
+	Max   float64
+}
+
+var stats map[string]*Stat = make(map[string]*Stat, 0)
 var lc atomic.Int64
 
-func ProcessChunks(r io.ReaderAt, chunkSize int64, parallelism int64) int {
+func ProcessChunks(f *os.File, chunkSize int64, parallelism int64) int {
+	info, err := f.Stat()
+	if err != nil {
+		panic("couldn't retreive file stats")
+	}
+	r := f
+	size := info.Size()
 	tot := 0
 	permit := struct{}{}
+	var wg sync.WaitGroup
 	var offset int64
 	semaphoreChan := make(chan struct{}, parallelism)
-	done := make(chan struct{})
+	ctx, canc := context.WithCancel(context.Background())
+	localStats := make(map[string]*Stat, 0)
+	defer canc()
 
+	fmt.Printf("Size: %v\n", size)
 	for {
 		select {
 		case semaphoreChan <- permit:
+			wg.Add(1)
 			go func(o int64) {
-				_, err := ProcessChunk(r, o, chunkSize)
+				defer wg.Done()
+				computedStats, err := ProcessChunk(r, o, chunkSize)
 				if err != nil && err != io.EOF {
 					panic(err)
 				}
-				<-semaphoreChan
 				if err == io.EOF {
-					done <- struct{}{}
+					canc()
+				}
+				<-semaphoreChan
+				localStats = computedStats
+				if offset > size {
+					canc()
 				}
 			}(offset)
+			for k, v := range localStats {
+				if val, exists := stats[k]; exists {
+					stats[k].Min = min(val.Min, v.Min)
+					stats[k].Tot = val.Tot + v.Tot
+					stats[k].Count = val.Count + v.Count
+					stats[k].Max = max(val.Max, v.Max)
+				} else {
+					stats[k] = v
+				}
+			}
+			tot++
 			offset += chunkSize
-		case <-done:
-			// close(semaphoreChan)
+		case <-ctx.Done():
+			wg.Wait()
+
 			return tot
 		}
 	}
 }
 
-func ProcessChunk(r io.ReaderAt, from, bytes int64) (int, error) {
+func ProcessChunk(r io.ReaderAt, from, bytes int64) (map[string]*Stat, error) {
 	extra := int64(64)
 	buf := make([]byte, bytes+extra)
 
@@ -47,8 +87,16 @@ func ProcessChunk(r io.ReaderAt, from, bytes int64) (int, error) {
 	if err != nil && err != io.EOF {
 		panic(err)
 	}
-	fmt.Printf("Chunk %d[%d] %s-%s\n", from, from+bytes, string(buf[0:5]), string(buf[read-6:read-1]))
 
+	if read == 0 && err == io.EOF {
+		return nil, err
+	}
+
+	localStats := make(map[string]*Stat, 0)
+
+	// fmt.Printf("Chunk %d[%d] %s-%s\n", from, from+bytes, string(buf[0:5]), string(buf[read-6:read-1]))
+
+	// localStats := make(map[string][]float64, 0)
 	currentCity := []byte{}
 	currentTemp := []byte{}
 	leftOfSemicolon := true
@@ -71,22 +119,34 @@ func ProcessChunk(r io.ReaderAt, from, bytes int64) (int, error) {
 				break
 			}
 		}
+		if c == ';' {
+			leftOfSemicolon = false
+			continue
+		}
 		if c == '\n' && p <= int64(read)-1 {
 			leftOfSemicolon = true
-			// cur := stats[string(currentCity)]
-			parsed, err := strconv.ParseFloat(string(currentTemp), 32)
+			parsed, err := strconv.ParseFloat(string(currentTemp), 64)
 			if err != nil {
 				panic(fmt.Sprintf("couldn't parse float: %s;%s", currentCity, currentTemp))
 			}
-			fmt.Printf("Storing %s -> %f (eof: %v)\n", string(currentCity), parsed, err)
-			// stats[string(currentCity)] = cur + float32(parsed)
+
+			_, found := localStats[string(currentCity)]
+			if !found {
+				localStats[string(currentCity)] = &Stat{
+					Min: parsed,
+					Tot: 0,
+					Max: parsed,
+				}
+			}
+
+			localStats[string(currentCity)].Min = min(localStats[string(currentCity)].Min, parsed)
+			localStats[string(currentCity)].Tot = localStats[string(currentCity)].Tot + parsed
+			localStats[string(currentCity)].Count++
+			localStats[string(currentCity)].Max = max(localStats[string(currentCity)].Max, parsed)
+
 			currentCity = []byte{}
 			currentTemp = []byte{}
 			lines += 1
-			continue
-		}
-		if c == ';' {
-			leftOfSemicolon = false
 			continue
 		}
 
@@ -99,14 +159,21 @@ func ProcessChunk(r io.ReaderAt, from, bytes int64) (int, error) {
 
 	lc.Add(int64(lines))
 
-	return read, err
+	return localStats, err
+}
+
+func ceilTo(n float64, decimals int) float64 {
+	factor := math.Pow(10, float64(decimals))
+	return math.Ceil(n*factor) / factor
 }
 
 func main() {
-	const chunkSize = 256 // 4194304 * 64
-	const parallelism = 1
-	const filePath = "assets/measurements_med.txt"
+	const chunkSize = 4194304
+	const parallelism = 8
+	const filePath = "assets/measurements_max.txt"
 
+	start := time.Now()
+	fmt.Printf("Starting at %s\n", start)
 	f, err := os.Open(filePath)
 	if err != nil {
 		panic(err)
@@ -115,5 +182,27 @@ func main() {
 
 	totSections := ProcessChunks(f, chunkSize, parallelism)
 
-	fmt.Printf("Done! %d, lines: %d\n", totSections, lc.Load())
+	fmt.Printf("{")
+	keys := make([]string, len(stats))
+	cnt := 0
+	for k := range stats {
+		keys[cnt] = k
+		cnt++
+	}
+	sort.Strings(keys)
+	cnt = 0
+	for _, k := range keys {
+		v := stats[k]
+		v.Min = ceilTo(v.Min, 1)
+		v.Max = ceilTo(v.Max, 1)
+		fmt.Printf("%s=%.1f/%.1f/%.1f", k, v.Min, ceilTo(v.Tot/float64(v.Count), 1), v.Max)
+		if cnt < len(keys)-1 {
+			fmt.Printf(", ")
+		}
+		cnt++
+	}
+	fmt.Printf("}\n")
+
+	fmt.Printf("Done in %s\n", time.Since(start))
+	fmt.Printf("Done! chunks: %d, lines: %d\n", totSections, lc.Load())
 }

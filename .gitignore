@@ -1,4 +1,5 @@
 **/*.log
 assets/*
+result*
 !assets/expected_min.txt
 !assets/measurements_min.txt
