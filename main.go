@@ -6,6 +6,7 @@ import (
 	"io"
 	"math"
 	"os"
+	"runtime/pprof"
 	"sort"
 	"strconv"
 	"sync"
@@ -41,6 +42,16 @@ func ProcessChunks(f *os.File, chunkSize int64, parallelism int64) int {
 
 	fmt.Printf("Size: %v\n", size)
 	for {
+		for k, v := range localStats {
+			if val, exists := stats[k]; exists {
+				stats[k].Min = min(val.Min, v.Min)
+				stats[k].Tot = val.Tot + v.Tot
+				stats[k].Count = val.Count + v.Count
+				stats[k].Max = max(val.Max, v.Max)
+			} else {
+				stats[k] = v
+			}
+		}
 		select {
 		case semaphoreChan <- permit:
 			wg.Add(1)
@@ -59,21 +70,10 @@ func ProcessChunks(f *os.File, chunkSize int64, parallelism int64) int {
 					canc()
 				}
 			}(offset)
-			for k, v := range localStats {
-				if val, exists := stats[k]; exists {
-					stats[k].Min = min(val.Min, v.Min)
-					stats[k].Tot = val.Tot + v.Tot
-					stats[k].Count = val.Count + v.Count
-					stats[k].Max = max(val.Max, v.Max)
-				} else {
-					stats[k] = v
-				}
-			}
 			tot++
 			offset += chunkSize
 		case <-ctx.Done():
 			wg.Wait()
-
 			return tot
 		}
 	}
@@ -97,8 +97,10 @@ func ProcessChunk(r io.ReaderAt, from, bytes int64) (map[string]*Stat, error) {
 	// fmt.Printf("Chunk %d[%d] %s-%s\n", from, from+bytes, string(buf[0:5]), string(buf[read-6:read-1]))
 
 	// localStats := make(map[string][]float64, 0)
-	currentCity := []byte{}
-	currentTemp := []byte{}
+	// currentCity := []byte{}
+	// currentTemp := []byte{}
+	cityStart, cityPointer := int64(0), int64(0)
+	tempStart, tempPointer := int64(0), int64(0)
 	leftOfSemicolon := true
 	isFirstLine := true
 	if from == 0 {
@@ -110,6 +112,8 @@ func ProcessChunk(r io.ReaderAt, from, bytes int64) (map[string]*Stat, error) {
 		if isFirstLine {
 			if c == '\n' {
 				isFirstLine = false
+				cityStart = p + 1
+				cityPointer = p + 1
 			}
 			continue
 		}
@@ -121,43 +125,51 @@ func ProcessChunk(r io.ReaderAt, from, bytes int64) (map[string]*Stat, error) {
 		}
 		if c == ';' {
 			leftOfSemicolon = false
+			tempStart = p + 1
+			tempPointer = p + 1
 			continue
 		}
 		if c == '\n' && p <= int64(read)-1 {
+			currentCity := string(buf[cityStart:cityPointer])
+			currentTemp := string(buf[tempStart:tempPointer])
 			leftOfSemicolon = true
-			parsed, err := strconv.ParseFloat(string(currentTemp), 64)
+			parsed, err := strconv.ParseFloat(currentTemp, 64)
 			if err != nil {
 				panic(fmt.Sprintf("couldn't parse float: %s;%s", currentCity, currentTemp))
 			}
 
-			_, found := localStats[string(currentCity)]
+			val, found := localStats[currentCity]
 			if !found {
-				localStats[string(currentCity)] = &Stat{
+				val = &Stat{
 					Min: parsed,
 					Tot: 0,
 					Max: parsed,
 				}
+				localStats[currentCity] = val
 			}
 
-			localStats[string(currentCity)].Min = min(localStats[string(currentCity)].Min, parsed)
-			localStats[string(currentCity)].Tot = localStats[string(currentCity)].Tot + parsed
-			localStats[string(currentCity)].Count++
-			localStats[string(currentCity)].Max = max(localStats[string(currentCity)].Max, parsed)
+			val.Min = min(val.Min, parsed)
+			val.Tot = val.Tot + parsed
+			val.Count++
+			val.Max = max(val.Max, parsed)
 
-			currentCity = []byte{}
-			currentTemp = []byte{}
+			// currentCity = []byte{}
+			cityStart = p + 1
+			cityPointer = p + 1
+
+			// currentTemp = []byte{}
 			lines += 1
 			continue
 		}
 
 		if leftOfSemicolon {
-			currentCity = append(currentCity, c)
+			cityPointer++
+			// currentCity = append(currentCity, c)
 		} else {
-			currentTemp = append(currentTemp, c)
+			tempPointer++
+			// currentTemp = append(currentTemp, c)
 		}
 	}
-
-	lc.Add(int64(lines))
 
 	return localStats, err
 }
@@ -168,7 +180,25 @@ func ceilTo(n float64, decimals int) float64 {
 }
 
 func main() {
-	const chunkSize = 4194304
+	// CPU profiling
+	cpuProfile, err := os.Create("cpu.prof")
+	if err != nil {
+		panic(err)
+	}
+	defer cpuProfile.Close()
+	if err := pprof.StartCPUProfile(cpuProfile); err != nil {
+		panic(err)
+	}
+	defer pprof.StopCPUProfile()
+
+	chunkSize := int64(4194304)
+	if len(os.Args) > 1 {
+		cs, err := strconv.Atoi(os.Args[1])
+		chunkSize = int64(cs)
+		if err != nil {
+			panic("Couldn't parse args")
+		}
+	}
 	const parallelism = 8
 	const filePath = "assets/measurements_max.txt"
 
@@ -204,5 +234,5 @@ func main() {
 	fmt.Printf("}\n")
 
 	fmt.Printf("Done in %s\n", time.Since(start))
-	fmt.Printf("Done! chunks: %d, lines: %d\n", totSections, lc.Load())
+	fmt.Printf("Done! chunks: %d\n", totSections)
 }
