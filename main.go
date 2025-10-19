@@ -104,13 +104,8 @@ func ProcessChunk(r io.ReaderAt, from, bytes int64) (map[string]*Stat, error) {
 
 	localStats := make(map[string]*Stat, 0)
 
-	// fmt.Printf("Chunk %d[%d] %s-%s\n", from, from+bytes, string(buf[0:5]), string(buf[read-6:read-1]))
-
-	// localStats := make(map[string][]float64, 0)
-	// currentCity := []byte{}
-	// currentTemp := []byte{}
-	cityStart, cityPointer := int64(0), int64(0)
-	tempStart, tempPointer := int64(0), int64(0)
+	cityStart, cityEnd := int64(0), int64(0)
+	tempStart, tempEnd := int64(0), int64(0)
 	leftOfSemicolon := true
 	isFirstLine := true
 	if from == 0 {
@@ -123,7 +118,7 @@ func ProcessChunk(r io.ReaderAt, from, bytes int64) (map[string]*Stat, error) {
 			if c == '\n' {
 				isFirstLine = false
 				cityStart = p + 1
-				cityPointer = p + 1
+				cityEnd = p + 1
 			}
 			continue
 		}
@@ -136,17 +131,19 @@ func ProcessChunk(r io.ReaderAt, from, bytes int64) (map[string]*Stat, error) {
 		if c == ';' {
 			leftOfSemicolon = false
 			tempStart = p + 1
-			tempPointer = p + 1
+			tempEnd = p + 1
 			continue
 		}
 		if c == '\n' && p <= int64(read)-1 {
-			currentCity := string(buf[cityStart:cityPointer])
-			currentTemp := string(buf[tempStart:tempPointer])
+			currentCity := string(buf[cityStart:cityEnd])
+			// currentTemp := string(buf[tempStart:tempEnd])
 			leftOfSemicolon = true
-			parsed, err := strconv.ParseFloat(currentTemp, 64)
-			if err != nil {
-				panic(fmt.Sprintf("couldn't parse float: %s;%s", currentCity, currentTemp))
-			}
+			// parsed, err := strconv.ParseFloat(currentTemp, 64)
+			// if err != nil {
+			// 	panic(fmt.Sprintf("couldn't parse float: %s;%s", currentCity, currentTemp))
+			// }
+
+			parsed := ParseFloat([]byte(buf[tempStart:tempEnd]))
 
 			val, found := localStats[currentCity]
 			if !found {
@@ -164,18 +161,16 @@ func ProcessChunk(r io.ReaderAt, from, bytes int64) (map[string]*Stat, error) {
 			val.Max = max(val.Max, parsed)
 
 			cityStart = p + 1
-			cityPointer = p + 1
+			cityEnd = p + 1
 
 			lines += 1
 			continue
 		}
 
 		if leftOfSemicolon {
-			cityPointer++
-			// currentCity = append(currentCity, c)
+			cityEnd++
 		} else {
-			tempPointer++
-			// currentTemp = append(currentTemp, c)
+			tempEnd++
 		}
 	}
 
@@ -185,6 +180,26 @@ func ProcessChunk(r io.ReaderAt, from, bytes int64) (map[string]*Stat, error) {
 func ceilTo(n float64, decimals int) float64 {
 	factor := math.Pow(10, float64(decimals))
 	return math.Ceil(n*factor) / factor
+}
+
+func ParseFloat(bytes []byte) float64 {
+	negative := bytes[0] == '-'
+	number := int32(0)
+	l := len(bytes)
+
+	start := 0
+	if negative {
+		start = 1
+	}
+	for i := start; i < l-2; i++ {
+		number = number*10 + int32(bytes[i]-'0')
+	}
+	number = number*10 + int32(bytes[l-1]-'0')
+
+	if negative {
+		return -float64(number) * 0.1
+	}
+	return float64(number) * 0.1
 }
 
 func main() {
@@ -208,7 +223,7 @@ func main() {
 		}
 	}
 	const parallelism = 8
-	const filePath = "assets/measurements_med.txt"
+	const filePath = "assets/measurements_max.txt"
 
 	start := time.Now()
 	fmt.Printf("Starting at %s\n", start)
