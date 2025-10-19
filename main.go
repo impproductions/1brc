@@ -92,7 +92,8 @@ func ProcessChunks(f *os.File, chunkSize int64, parallelism int64) int64 {
 
 func ProcessChunk(r io.ReaderAt, from, bytes int64) (map[string]*Stat, error) {
 	extra := int64(64)
-	buf := make([]byte, bytes+extra)
+	overshotLength := bytes + extra
+	buf := make([]byte, overshotLength)
 
 	read, err := r.ReadAt(buf, from)
 	if err != nil && err != io.EOF {
@@ -113,7 +114,7 @@ func ProcessChunk(r io.ReaderAt, from, bytes int64) (map[string]*Stat, error) {
 		isFirstLine = false
 	}
 	lines := 0
-	for p := range bytes + extra {
+	for p := range overshotLength {
 		c := buf[p]
 		if isFirstLine {
 			if c == '\n' {
@@ -137,7 +138,7 @@ func ProcessChunk(r io.ReaderAt, from, bytes int64) (map[string]*Stat, error) {
 		}
 		if c == '\n' && p <= int64(read)-1 {
 			unsafeCurrentCityString := unsafeBytesAsString(buf[cityStart:cityEnd])
-			currentTemp := parseFloat([]byte(buf[tempStart:tempEnd]))
+			currentTemp := parseFloat(buf[tempStart:tempEnd])
 			leftOfSemicolon = true
 
 			val, found := localStats[unsafeCurrentCityString]
