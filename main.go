@@ -6,11 +6,9 @@ import (
 	"io"
 	"math"
 	"os"
-	"runtime/pprof"
 	"sort"
 	"strconv"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -22,29 +20,31 @@ type Stat struct {
 }
 
 var stats map[string]*Stat = make(map[string]*Stat, 0)
-var lc atomic.Int64
 
-func ProcessChunks(f *os.File, chunkSize int64, parallelism int64) int {
+func ProcessChunks(f *os.File, chunkSize int64, parallelism int64) int64 {
+	ctx, canc := context.WithCancel(context.Background())
+	defer canc()
+
 	info, err := f.Stat()
 	if err != nil {
 		panic("couldn't retreive file stats")
 	}
-	r := f
-	size := info.Size()
-	tot := 0
-	permit := struct{}{}
-	var wg sync.WaitGroup
-	var recWg sync.WaitGroup
-	var offset int64
-	semaphoreChan := make(chan struct{}, parallelism)
-	ctx, canc := context.WithCancel(context.Background())
-	defer canc()
 
-	updateChan := make(chan map[string]*Stat)
-	recWg.Add(1)
+	var wgProd sync.WaitGroup
+	var wgRec sync.WaitGroup
+
+	permit := struct{}{}
+	semaphore := make(chan struct{}, parallelism)
+
+	var size int64 = info.Size()
+	var tot int64
+	var offset int64
+
+	updates := make(chan map[string]*Stat)
+	wgRec.Add(1)
 	go func() {
-		defer recWg.Done()
-		for update := range updateChan {
+		defer wgRec.Done()
+		for update := range updates {
 			for k, v := range update {
 				if val, exists := stats[k]; exists {
 					stats[k].Min = min(val.Min, v.Min)
@@ -58,22 +58,21 @@ func ProcessChunks(f *os.File, chunkSize int64, parallelism int64) int {
 		}
 	}()
 
-	fmt.Printf("Size: %v\n", size)
 	for {
 		select {
-		case semaphoreChan <- permit:
-			wg.Add(1)
+		case semaphore <- permit:
+			wgProd.Add(1)
 			go func(o int64) {
-				defer wg.Done()
-				computedStats, err := ProcessChunk(r, o, chunkSize)
+				defer wgProd.Done()
+				computedStats, err := ProcessChunk(f, o, chunkSize)
 				if err != nil && err != io.EOF {
 					panic(err)
 				}
 				if err == io.EOF {
 					canc()
 				}
-				<-semaphoreChan
-				updateChan <- computedStats
+				<-semaphore
+				updates <- computedStats
 
 				if offset > size {
 					canc()
@@ -82,9 +81,9 @@ func ProcessChunks(f *os.File, chunkSize int64, parallelism int64) int {
 			tot++
 			offset += chunkSize
 		case <-ctx.Done():
-			wg.Wait()
-			close(updateChan)
-			recWg.Wait()
+			wgProd.Wait()
+			close(updates)
+			wgRec.Wait()
 			return tot
 		}
 	}
@@ -190,15 +189,15 @@ func ceilTo(n float64, decimals int) float64 {
 
 func main() {
 	// CPU profiling
-	cpuProfile, err := os.Create("cpu.prof")
-	if err != nil {
-		panic(err)
-	}
-	defer cpuProfile.Close()
-	if err := pprof.StartCPUProfile(cpuProfile); err != nil {
-		panic(err)
-	}
-	defer pprof.StopCPUProfile()
+	// cpuProfile, err := os.Create("cpu.prof")
+	// if err != nil {
+	// 	panic(err)
+	// }
+	// defer cpuProfile.Close()
+	// if err := pprof.StartCPUProfile(cpuProfile); err != nil {
+	// 	panic(err)
+	// }
+	// defer pprof.StopCPUProfile()
 
 	chunkSize := int64(4194304)
 	if len(os.Args) > 1 {
@@ -209,7 +208,7 @@ func main() {
 		}
 	}
 	const parallelism = 8
-	const filePath = "assets/measurements_max.txt"
+	const filePath = "assets/measurements_med.txt"
 
 	start := time.Now()
 	fmt.Printf("Starting at %s\n", start)
