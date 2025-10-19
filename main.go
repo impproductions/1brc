@@ -7,7 +7,6 @@ import (
 	"os"
 	"runtime/pprof"
 	"sort"
-	"strconv"
 	"sync"
 	"time"
 	"unsafe"
@@ -22,7 +21,7 @@ type Stat struct {
 
 var stats map[string]*Stat = make(map[string]*Stat, 500)
 
-func ProcessChunks(f *os.File, chunkSize int64, parallelism int64) int64 {
+func ProcessChunks(f *os.File, chunkSize int64, parallelism int64) {
 	ctx, canc := context.WithCancel(context.Background())
 	defer canc()
 
@@ -38,22 +37,21 @@ func ProcessChunks(f *os.File, chunkSize int64, parallelism int64) int64 {
 	semaphore := make(chan struct{}, parallelism)
 
 	var size int64 = info.Size()
-	var tot int64
 	var offset int64
 
 	updates := make(chan map[string]*Stat)
 	wgRec.Add(1)
 	go func() {
 		defer wgRec.Done()
-		for update := range updates {
-			for k, v := range update {
+		for statsUpdate := range updates {
+			for k, updatedVal := range statsUpdate {
 				if val, exists := stats[k]; exists {
-					stats[k].Min = min(val.Min, v.Min)
-					stats[k].Tot = val.Tot + v.Tot
-					stats[k].Count = val.Count + v.Count
-					stats[k].Max = max(val.Max, v.Max)
+					stats[k].Min = min(val.Min, updatedVal.Min)
+					stats[k].Tot = val.Tot + updatedVal.Tot
+					stats[k].Count = val.Count + updatedVal.Count
+					stats[k].Max = max(val.Max, updatedVal.Max)
 				} else {
-					stats[k] = v
+					stats[k] = updatedVal
 				}
 			}
 		}
@@ -79,13 +77,12 @@ func ProcessChunks(f *os.File, chunkSize int64, parallelism int64) int64 {
 					canc()
 				}
 			}(offset)
-			tot++
 			offset += chunkSize
 		case <-ctx.Done():
 			wgProd.Wait()
 			close(updates)
 			wgRec.Wait()
-			return tot
+			return
 		}
 	}
 }
@@ -104,6 +101,8 @@ func ProcessChunk(r io.ReaderAt, from, bytes int64) (map[string]*Stat, error) {
 		return nil, err
 	}
 
+	limit := min(int64(read), bytes)
+
 	localStats := make(map[string]*Stat, 500)
 
 	cityStart, cityEnd := int64(0), int64(0)
@@ -113,7 +112,6 @@ func ProcessChunk(r io.ReaderAt, from, bytes int64) (map[string]*Stat, error) {
 	if from == 0 {
 		isFirstLine = false
 	}
-	lines := 0
 	for p := range overshotLength {
 		c := buf[p]
 		if isFirstLine {
@@ -124,7 +122,7 @@ func ProcessChunk(r io.ReaderAt, from, bytes int64) (map[string]*Stat, error) {
 			}
 			continue
 		}
-		if p > min(int64(read), bytes) {
+		if p > limit {
 			if buf[p-1] == '\n' {
 				// we've overshot and are done processing the last line of the chunk
 				break
@@ -159,7 +157,6 @@ func ProcessChunk(r io.ReaderAt, from, bytes int64) (map[string]*Stat, error) {
 			cityStart = p + 1
 			cityEnd = p + 1
 
-			lines += 1
 			continue
 		}
 
@@ -217,26 +214,18 @@ func main() {
 	}
 	defer pprof.StopCPUProfile()
 
-	chunkSize := int64(4194304)
-	if len(os.Args) > 1 {
-		cs, err := strconv.Atoi(os.Args[1])
-		chunkSize = int64(cs)
-		if err != nil {
-			panic("Couldn't parse args")
-		}
-	}
+	const chunkSize = int64(16777216)
 	const parallelism = 8
 	const filePath = "assets/measurements_max.txt"
 
 	start := time.Now()
-	fmt.Printf("Starting at %s\n", start)
 	f, err := os.Open(filePath)
 	if err != nil {
 		panic(err)
 	}
 	defer f.Close()
 
-	totSections := ProcessChunks(f, chunkSize, parallelism)
+	ProcessChunks(f, chunkSize, parallelism)
 
 	fmt.Printf("{")
 	keys := make([]string, len(stats))
@@ -246,19 +235,14 @@ func main() {
 		cnt++
 	}
 	sort.Strings(keys)
-	cnt = 0
-	for _, k := range keys {
+	for i, k := range keys {
 		v := stats[k]
-		// v.Min = v.Min
-		// v.Max = v.Max
 		fmt.Printf("%s=%.1f/%.1f/%.1f", k, v.Min, v.Tot/float64(v.Count), v.Max)
-		if cnt < len(keys)-1 {
+		if i < len(keys)-1 {
 			fmt.Printf(", ")
 		}
-		cnt++
 	}
 	fmt.Printf("}\n")
 
 	fmt.Printf("Done in %s\n", time.Since(start))
-	fmt.Printf("Done! chunks: %d\n", totSections)
 }
