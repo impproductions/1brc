@@ -4,12 +4,13 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"math"
 	"os"
+	"runtime/pprof"
 	"sort"
 	"strconv"
 	"sync"
 	"time"
+	"unsafe"
 )
 
 type Stat struct {
@@ -19,7 +20,7 @@ type Stat struct {
 	Max   float64
 }
 
-var stats map[string]*Stat = make(map[string]*Stat, 0)
+var stats map[string]*Stat = make(map[string]*Stat, 500)
 
 func ProcessChunks(f *os.File, chunkSize int64, parallelism int64) int64 {
 	ctx, canc := context.WithCancel(context.Background())
@@ -102,7 +103,7 @@ func ProcessChunk(r io.ReaderAt, from, bytes int64) (map[string]*Stat, error) {
 		return nil, err
 	}
 
-	localStats := make(map[string]*Stat, 0)
+	localStats := make(map[string]*Stat, 500)
 
 	cityStart, cityEnd := int64(0), int64(0)
 	tempStart, tempEnd := int64(0), int64(0)
@@ -135,30 +136,24 @@ func ProcessChunk(r io.ReaderAt, from, bytes int64) (map[string]*Stat, error) {
 			continue
 		}
 		if c == '\n' && p <= int64(read)-1 {
-			currentCity := string(buf[cityStart:cityEnd])
-			// currentTemp := string(buf[tempStart:tempEnd])
+			unsafeCurrentCityString := unsafeBytesAsString(buf[cityStart:cityEnd])
+			currentTemp := parseFloat([]byte(buf[tempStart:tempEnd]))
 			leftOfSemicolon = true
-			// parsed, err := strconv.ParseFloat(currentTemp, 64)
-			// if err != nil {
-			// 	panic(fmt.Sprintf("couldn't parse float: %s;%s", currentCity, currentTemp))
-			// }
 
-			parsed := ParseFloat([]byte(buf[tempStart:tempEnd]))
-
-			val, found := localStats[currentCity]
+			val, found := localStats[unsafeCurrentCityString]
 			if !found {
 				val = &Stat{
-					Min: parsed,
-					Tot: 0,
-					Max: parsed,
+					Min: currentTemp,
+					Max: currentTemp,
 				}
-				localStats[currentCity] = val
+				currentCitySafe := string(buf[cityStart:cityEnd])
+				localStats[currentCitySafe] = val
 			}
 
-			val.Min = min(val.Min, parsed)
-			val.Tot = val.Tot + parsed
+			val.Min = min(val.Min, currentTemp)
+			val.Tot = val.Tot + currentTemp
 			val.Count++
-			val.Max = max(val.Max, parsed)
+			val.Max = max(val.Max, currentTemp)
 
 			cityStart = p + 1
 			cityEnd = p + 1
@@ -177,12 +172,19 @@ func ProcessChunk(r io.ReaderAt, from, bytes int64) (map[string]*Stat, error) {
 	return localStats, err
 }
 
-func ceilTo(n float64, decimals int) float64 {
-	factor := math.Pow(10, float64(decimals))
-	return math.Ceil(n*factor) / factor
+// func ceilTo(n float64, decimals int) float64 {
+// 	factor := math.Pow(10, float64(decimals))
+// 	return math.Ceil(n*factor) / factor
+// }
+
+func unsafeBytesAsString(b []byte) string {
+	if len(b) == 0 {
+		return ""
+	}
+	return unsafe.String(&b[0], len(b))
 }
 
-func ParseFloat(bytes []byte) float64 {
+func parseFloat(bytes []byte) float64 {
 	negative := bytes[0] == '-'
 	number := int32(0)
 	l := len(bytes)
@@ -204,15 +206,15 @@ func ParseFloat(bytes []byte) float64 {
 
 func main() {
 	// CPU profiling
-	// cpuProfile, err := os.Create("cpu.prof")
-	// if err != nil {
-	// 	panic(err)
-	// }
-	// defer cpuProfile.Close()
-	// if err := pprof.StartCPUProfile(cpuProfile); err != nil {
-	// 	panic(err)
-	// }
-	// defer pprof.StopCPUProfile()
+	cpuProfile, err := os.Create("cpu.prof")
+	if err != nil {
+		panic(err)
+	}
+	defer cpuProfile.Close()
+	if err := pprof.StartCPUProfile(cpuProfile); err != nil {
+		panic(err)
+	}
+	defer pprof.StopCPUProfile()
 
 	chunkSize := int64(4194304)
 	if len(os.Args) > 1 {
@@ -246,8 +248,8 @@ func main() {
 	cnt = 0
 	for _, k := range keys {
 		v := stats[k]
-		v.Min = ceilTo(v.Min, 1)
-		v.Max = ceilTo(v.Max, 1)
+		// v.Min = v.Min
+		// v.Max = v.Max
 		fmt.Printf("%s=%.1f/%.1f/%.1f", k, v.Min, v.Tot/float64(v.Count), v.Max)
 		if cnt < len(keys)-1 {
 			fmt.Printf(", ")
