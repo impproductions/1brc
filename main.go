@@ -34,24 +34,32 @@ func ProcessChunks(f *os.File, chunkSize int64, parallelism int64) int {
 	tot := 0
 	permit := struct{}{}
 	var wg sync.WaitGroup
+	var recWg sync.WaitGroup
 	var offset int64
 	semaphoreChan := make(chan struct{}, parallelism)
 	ctx, canc := context.WithCancel(context.Background())
-	localStats := make(map[string]*Stat, 0)
 	defer canc()
+
+	updateChan := make(chan map[string]*Stat)
+	recWg.Add(1)
+	go func() {
+		defer recWg.Done()
+		for update := range updateChan {
+			for k, v := range update {
+				if val, exists := stats[k]; exists {
+					stats[k].Min = min(val.Min, v.Min)
+					stats[k].Tot = val.Tot + v.Tot
+					stats[k].Count = val.Count + v.Count
+					stats[k].Max = max(val.Max, v.Max)
+				} else {
+					stats[k] = v
+				}
+			}
+		}
+	}()
 
 	fmt.Printf("Size: %v\n", size)
 	for {
-		for k, v := range localStats {
-			if val, exists := stats[k]; exists {
-				stats[k].Min = min(val.Min, v.Min)
-				stats[k].Tot = val.Tot + v.Tot
-				stats[k].Count = val.Count + v.Count
-				stats[k].Max = max(val.Max, v.Max)
-			} else {
-				stats[k] = v
-			}
-		}
 		select {
 		case semaphoreChan <- permit:
 			wg.Add(1)
@@ -65,7 +73,8 @@ func ProcessChunks(f *os.File, chunkSize int64, parallelism int64) int {
 					canc()
 				}
 				<-semaphoreChan
-				localStats = computedStats
+				updateChan <- computedStats
+
 				if offset > size {
 					canc()
 				}
@@ -74,6 +83,8 @@ func ProcessChunks(f *os.File, chunkSize int64, parallelism int64) int {
 			offset += chunkSize
 		case <-ctx.Done():
 			wg.Wait()
+			close(updateChan)
+			recWg.Wait()
 			return tot
 		}
 	}
@@ -153,11 +164,9 @@ func ProcessChunk(r io.ReaderAt, from, bytes int64) (map[string]*Stat, error) {
 			val.Count++
 			val.Max = max(val.Max, parsed)
 
-			// currentCity = []byte{}
 			cityStart = p + 1
 			cityPointer = p + 1
 
-			// currentTemp = []byte{}
 			lines += 1
 			continue
 		}
@@ -225,7 +234,7 @@ func main() {
 		v := stats[k]
 		v.Min = ceilTo(v.Min, 1)
 		v.Max = ceilTo(v.Max, 1)
-		fmt.Printf("%s=%.1f/%.1f/%.1f", k, v.Min, ceilTo(v.Tot/float64(v.Count), 1), v.Max)
+		fmt.Printf("%s=%.1f/%.1f/%.1f", k, v.Min, v.Tot/float64(v.Count), v.Max)
 		if cnt < len(keys)-1 {
 			fmt.Printf(", ")
 		}
