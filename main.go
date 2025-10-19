@@ -73,7 +73,7 @@ func ProcessChunks(f *os.File, chunkSize int64, parallelism int64) {
 				<-semaphore
 				updates <- computedStats
 
-				if offset > size {
+				if o > size {
 					canc()
 				}
 			}(offset)
