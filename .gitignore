@@ -5,3 +5,4 @@ result*
 !assets/measurements_min.txt
 brc
 *.prof
+*.local
