@@ -21,7 +21,7 @@ type Stat struct {
 
 var stats map[string]*Stat = make(map[string]*Stat, 500)
 
-func ProcessChunks(f *os.File, chunkSize int64, parallelism int64) {
+func ProcessChunks(f *os.File, chunkSize int, parallelism int64) {
 	ctx, canc := context.WithCancel(context.Background())
 	defer canc()
 
@@ -60,6 +60,11 @@ func ProcessChunks(f *os.File, chunkSize int64, parallelism int64) {
 	for {
 		select {
 		case semaphore <- permit:
+			if offset > size {
+				<-semaphore
+				canc()
+				continue
+			}
 			wgProd.Add(1)
 			go func(o int64) {
 				defer wgProd.Done()
@@ -73,11 +78,8 @@ func ProcessChunks(f *os.File, chunkSize int64, parallelism int64) {
 				<-semaphore
 				updates <- computedStats
 
-				if o > size {
-					canc()
-				}
 			}(offset)
-			offset += chunkSize
+			offset += int64(chunkSize)
 		case <-ctx.Done():
 			wgProd.Wait()
 			close(updates)
@@ -87,8 +89,8 @@ func ProcessChunks(f *os.File, chunkSize int64, parallelism int64) {
 	}
 }
 
-func ProcessChunk(r io.ReaderAt, from, bytes int64) (map[string]*Stat, error) {
-	extra := int64(64)
+func ProcessChunk(r io.ReaderAt, from int64, bytes int) (map[string]*Stat, error) {
+	extra := 64
 	overshotLength := bytes + extra
 	buf := make([]byte, overshotLength)
 
@@ -101,12 +103,12 @@ func ProcessChunk(r io.ReaderAt, from, bytes int64) (map[string]*Stat, error) {
 		return nil, err
 	}
 
-	limit := min(int64(read), bytes)
+	limit := min(read, bytes)
 
 	localStats := make(map[string]*Stat, 500)
 
-	cityStart, cityEnd := int64(0), int64(0)
-	tempStart, tempEnd := int64(0), int64(0)
+	cityStart, cityEnd := 0, 0
+	tempStart, tempEnd := 0, 0
 	leftOfSemicolon := true
 	isFirstLine := true
 	if from == 0 {
@@ -131,10 +133,10 @@ func ProcessChunk(r io.ReaderAt, from, bytes int64) (map[string]*Stat, error) {
 		if c == ';' {
 			leftOfSemicolon = false
 			tempStart = p + 1
-			tempEnd = p + 1
+			tempEnd = tempStart
 			continue
 		}
-		if c == '\n' && p <= int64(read)-1 {
+		if c == '\n' && p <= read-1 {
 			unsafeCurrentCityString := unsafeBytesAsString(buf[cityStart:cityEnd])
 			currentTemp := parseFloat(buf[tempStart:tempEnd])
 			leftOfSemicolon = true
@@ -155,7 +157,7 @@ func ProcessChunk(r io.ReaderAt, from, bytes int64) (map[string]*Stat, error) {
 			val.Max = max(val.Max, currentTemp)
 
 			cityStart = p + 1
-			cityEnd = p + 1
+			cityEnd = cityStart
 
 			continue
 		}
@@ -214,7 +216,7 @@ func main() {
 	}
 	defer pprof.StopCPUProfile()
 
-	const chunkSize = int64(16777216)
+	const chunkSize = 16777216
 	const parallelism = 8
 	const filePath = "assets/measurements_max.txt"
 
