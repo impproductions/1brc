@@ -1,0 +1,37 @@
+#!/usr/bin/env python3
+
+import sys
+
+def main():
+    if len(sys.argv) != 3:
+        print("Usage: compare_lines <file1> <file2>")
+        sys.exit(1)
+
+    with open(sys.argv[1], 'r', encoding='utf-8') as f1:
+        line1 = f1.readline().rstrip('\n\r')
+
+    with open(sys.argv[2], 'r', encoding='utf-8') as f2:
+        line2 = f2.readline().rstrip('\n\r')
+
+    max_len = max(len(line1), len(line2))
+
+    count = 0
+
+    for i in range(max_len):
+        char1 = line1[i] if i < len(line1) else ''
+        char2 = line2[i] if i < len(line2) else ''
+
+        if char1 != char2:
+            if char1.isdigit() or char2.isdigit():
+                count += 1
+
+    if count > 0:
+        print("Found " + str(count) + " differences!")
+        exit(1)
+
+    print("All good!")
+    exit(0)
+
+
+if __name__ == "__main__":
+    main()
