@@ -6,15 +6,16 @@ import (
 	"io"
 	"os"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 	"unsafe"
 )
 
 type Stat struct {
+	Count int32
 	Min   float64
 	Tot   float64
-	Count int64
 	Max   float64
 }
 
@@ -23,11 +24,12 @@ const (
 	TEMPERATURE = 1
 )
 
-const chunkSize = 16777216
-const parallelism = 8
-const filePath = "assets/measurements_max.txt"
+const CHUNK_SIZE = 16777216
+const PARALLELISM = 8
+const FILE_PATH = "assets/measurements_max.txt"
+const STATIONS = 10000
 
-var stats map[string]*Stat = make(map[string]*Stat, 10000)
+var stats map[string]*Stat = make(map[string]*Stat, STATIONS)
 
 func ProcessChunks(f *os.File, chunkSize int, parallelism int64) {
 	ctx, canc := context.WithCancel(context.Background())
@@ -119,7 +121,7 @@ func ProcessChunk(r io.ReaderAt, from int64, bytes int) (map[string]*Stat, error
 	}
 
 	limit := min(read, bytes)
-	localStats := make(map[string]*Stat, 10000) // 10k possible cities
+	localStats := make(map[string]*Stat, STATIONS)
 	starts := make([]int, 2)
 	ends := make([]int, 2)
 	// city cursors
@@ -130,8 +132,14 @@ func ProcessChunk(r io.ReaderAt, from int64, bytes int) (map[string]*Stat, error
 	ends[TEMPERATURE] = 0
 	mode := CITY
 
-	for i := starts[CITY]; i < overshotLength && (i <= limit || buf[i-1] != '\n'); i++ {
+	prev := byte(0)
+	for i := starts[CITY]; i < overshotLength; i++ {
 		c := buf[i]
+		prev = c
+
+		if i > limit && prev != '\n' {
+			break
+		}
 
 		switch {
 		case c != '\n' && c != ';':
@@ -176,6 +184,8 @@ func parseFloat(bytes []byte) float64 {
 	if negative {
 		start = 1
 	}
+
+	// we can exploit the fact that temps are guaranteed to have 1 decimal digit to skip the .
 	for i := start; i < l-2; i++ {
 		number = number*10 + int32(bytes[i]-'0')
 	}
@@ -189,15 +199,16 @@ func parseFloat(bytes []byte) float64 {
 
 func main() {
 	start := time.Now()
-	f, err := os.Open(filePath)
+	f, err := os.Open(FILE_PATH)
 	if err != nil {
 		panic(err)
 	}
 	defer f.Close()
 
-	ProcessChunks(f, chunkSize, parallelism)
+	ProcessChunks(f, CHUNK_SIZE, PARALLELISM)
 
-	fmt.Printf("{")
+	var builder strings.Builder
+	builder.WriteString("{")
 	keys := make([]string, len(stats))
 	cnt := 0
 	for k := range stats {
@@ -208,11 +219,14 @@ func main() {
 	for i, k := range keys {
 		v := stats[k]
 		if i > 0 {
-			fmt.Printf(", ")
+			builder.WriteString(", ")
 		}
-		fmt.Printf("%s=%.1f/%.1f/%.1f", k, v.Min, v.Tot/float64(v.Count), v.Max)
+		builder.WriteString(fmt.Sprintf("%s=%.1f/%.1f/%.1f", k, v.Min, v.Tot/float64(v.Count), v.Max))
 	}
-	fmt.Printf("}\n")
+	builder.WriteString("}\n")
+	os.WriteFile("result.txt", []byte(builder.String()), 0644)
 
 	fmt.Printf("Done in %s\n", time.Since(start))
+
+	os.Exit(0)
 }
