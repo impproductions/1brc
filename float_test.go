@@ -6,38 +6,38 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestZeroToFloat(t *testing.T) {
-	result := parseFloat([]byte("0.0"))
-	expected := float64(0.0)
+func TestZeroToInt(t *testing.T) {
+	result := parseInt([]byte("0.0"))
+	expected := int32(0)
 	assert.Equal(t, expected, result)
 }
 
-func TestIntToFloat(t *testing.T) {
-	result := parseFloat([]byte("1.0"))
-	expected := float64(1.0)
+func TestIntToInt(t *testing.T) {
+	result := parseInt([]byte("1.0"))
+	expected := int32(10)
 	assert.Equal(t, expected, result)
 }
 
-func TestLargeToFloat(t *testing.T) {
-	result := parseFloat([]byte("1873.0"))
-	expected := float64(1873.0)
+func TestLargeToInt(t *testing.T) {
+	result := parseInt([]byte("1873.0"))
+	expected := int32(18730)
 	assert.Equal(t, expected, result)
 }
 
-func TestDecimalsToFloat(t *testing.T) {
-	result := parseFloat([]byte("15.5"))
-	expected := float64(15.5)
+func TestDecimalsToInt(t *testing.T) {
+	result := parseInt([]byte("15.5"))
+	expected := int32(155)
 	assert.Equal(t, expected, result)
 }
 
-func TestNegativeToFloat(t *testing.T) {
-	result := parseFloat([]byte("-15.5"))
-	expected := float64(-15.5)
+func TestNegativeToInt(t *testing.T) {
+	result := parseInt([]byte("-15.5"))
+	expected := int32(-155)
 	assert.Equal(t, expected, result)
 }
 
 func TestTestAllDigits(t *testing.T) {
-	result := parseFloat([]byte("1234567890.0"))
-	expected := float64(1234567890.0)
+	result := parseInt([]byte("99.9"))
+	expected := int32(999)
 	assert.Equal(t, expected, result)
 }

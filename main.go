@@ -14,9 +14,9 @@ import (
 
 type Stat struct {
 	Count int32
-	Min   float64
-	Tot   float64
-	Max   float64
+	Min   int32
+	Tot   int64
+	Max   int32
 }
 
 const (
@@ -146,7 +146,7 @@ func ProcessChunk(r io.ReaderAt, from int64, bytes int) (map[string]*Stat, error
 			ends[mode]++
 		case c == '\n':
 			unsafe_currentCityString := unsafe.String(&buf[starts[CITY]], ends[CITY]-starts[CITY]) // string() just to access the map takes up a huge chunk of time
-			currentTemp := parseFloat(buf[starts[TEMPERATURE]:ends[TEMPERATURE]])
+			currentTemp := parseInt(buf[starts[TEMPERATURE]:ends[TEMPERATURE]])
 
 			val, found := localStats[unsafe_currentCityString]
 			if !found {
@@ -158,7 +158,7 @@ func ProcessChunk(r io.ReaderAt, from int64, bytes int) (map[string]*Stat, error
 			}
 
 			val.Min = min(val.Min, currentTemp)
-			val.Tot = val.Tot + currentTemp
+			val.Tot = val.Tot + int64(currentTemp)
 			val.Count++
 			val.Max = max(val.Max, currentTemp)
 
@@ -175,7 +175,7 @@ func ProcessChunk(r io.ReaderAt, from int64, bytes int) (map[string]*Stat, error
 	return localStats, err
 }
 
-func parseFloat(bytes []byte) float64 {
+func parseInt(bytes []byte) int32 {
 	negative := bytes[0] == '-'
 	number := int32(0)
 	l := len(bytes)
@@ -192,9 +192,9 @@ func parseFloat(bytes []byte) float64 {
 	number = number*10 + int32(bytes[l-1]-'0')
 
 	if negative {
-		return -float64(number) * 0.1
+		return -number
 	}
-	return float64(number) * 0.1
+	return number
 }
 
 func main() {
@@ -221,7 +221,7 @@ func main() {
 		if i > 0 {
 			builder.WriteString(", ")
 		}
-		builder.WriteString(fmt.Sprintf("%s=%.1f/%.1f/%.1f", k, v.Min, v.Tot/float64(v.Count), v.Max))
+		builder.WriteString(fmt.Sprintf("%s=%.1f/%.1f/%.1f", k, float64(v.Min)*0.1, float64(v.Tot)/float64(v.Count)*0.1, float64(v.Max)*0.1))
 	}
 	builder.WriteString("}\n")
 	os.WriteFile("result.txt", []byte(builder.String()), 0644)

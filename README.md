@@ -46,8 +46,7 @@ Done in 3.232516625s
 ### First iteration (baseline implementation, 13-17s)
 
 - Basic chunked file processing with semaphore-based parallelism
-- Initial Stat struct (min/tot/count/max) with context-based coordination
-- File size detection and local per-chunk aggregation
+- Local per-chunk aggregation
 
 ### Second iteration (stop growing slices & fancy float parsing -> 7-8s)
 
@@ -64,9 +63,8 @@ Done in 3.232516625s
 
 - Cleanup & refactoring
 - Mode-based parsing refactor using state constants (CITY/TEMPERATURE)
-- Changed Count to int32 for better memory layout
 - Switched output to strings.Builder
-- Improved loop termination logic
+- Improved hot path branching
 
 ## Possible Improvements
 
